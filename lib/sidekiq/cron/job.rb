@@ -613,7 +613,9 @@ module Sidekiq
 
       def not_past_scheduled_time?(current_time)
         last_cron_time = parsed_cron.previous_time(current_time).utc
-        return false if (current_time.to_i - last_cron_time.to_i) > 60
+          # or could it be?
+        #last_cron_time = last_time(current_time)
+        return false if (current_time.to_i - last_cron_time.to_i) > 600
         true
       end
 
