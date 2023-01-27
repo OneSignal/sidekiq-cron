@@ -1,50 +1,32 @@
-require 'rubygems'
-require 'bundler'
-begin
-  Bundler.setup(:default, :development)
-rescue Bundler::BundlerError => e
-  $stderr.puts e.message
-  $stderr.puts "Run `bundle install` to install missing gems"
-  exit e.status_code
-end
+$TESTING = true
+ENV['RACK_ENV'] = 'test'
 
 require 'simplecov'
 SimpleCov.start do
-  add_filter "/test/"
-
-  add_group 'SidekiqCron', 'lib/'
+  add_filter "test/"
+  add_group 'Sidekiq-Cron', 'lib/'
 end
-require 'coveralls'
-Coveralls.wear!
 
 require "minitest/autorun"
-require 'shoulda-context'
 require "rack/test"
 require 'mocha/minitest'
-
-ENV['RACK_ENV'] = 'test'
-
-#SIDEKIQ Require - need to have sidekiq running!
 require 'sidekiq'
-require 'sidekiq/util'
 require 'sidekiq/web'
-
-Sidekiq.logger.level = Logger::ERROR
-
-require 'sidekiq/redis_connection'
-redis_url = ENV['REDIS_URL'] || 'redis://0.0.0.0:6379'
-REDIS = Sidekiq::RedisConnection.create(:url => redis_url, :namespace => 'testy')
-
-Sidekiq.configure_client do |config|
-  config.redis = { :url => redis_url, :namespace => 'testy' }
-end
-
-
-$LOAD_PATH.unshift(File.join(File.dirname(__FILE__), '..', 'lib'))
-$LOAD_PATH.unshift(File.dirname(__FILE__))
+require "sidekiq/cli"
 require 'sidekiq-cron'
 require 'sidekiq/cron/web'
-require 'pp'
+
+Sidekiq.logger.level = Logger::ERROR
+Sidekiq.configure_client do |config|
+  config.redis = { url: ENV['REDIS_URL'] || 'redis://0.0.0.0:6379' }
+end
+
+# For testing symbolize args
+class Hash
+  def symbolize_keys
+    transform_keys { |key| key.to_sym rescue key }
+  end
+end
 
 class CronTestClass
   include Sidekiq::Worker

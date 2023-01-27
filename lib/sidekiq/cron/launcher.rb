@@ -1,38 +1,41 @@
-# require cron poller
 require 'sidekiq/cron/poller'
 
 # For Cron we need to add some methods to Launcher
 # so look at the code bellow.
 #
-# we are creating new cron poller instance and
-# adding start and stop commands to launcher
+# We are creating new cron poller instance and
+# adding start and stop commands to launcher.
 module Sidekiq
   module Cron
     module Launcher
-      # Add cron poller to launcher
+      DEFAULT_POLL_INTERVAL = 30
+
+      # Add cron poller to launcher.
       attr_reader :cron_poller
 
-      # add cron poller and execute normal initialize of Sidekiq launcher
-      def initialize(options)
-        @cron_poller = Sidekiq::Cron::Poller.new
-        super(options)
+      # Add cron poller and execute normal initialize of Sidekiq launcher.
+      def initialize(config)
+        config[:cron_poll_interval] = DEFAULT_POLL_INTERVAL if config[:cron_poll_interval].nil?
+
+        @cron_poller = Sidekiq::Cron::Poller.new(config) if config[:cron_poll_interval] > 0
+        super
       end
 
-      # execute normal run of launcher and run cron poller
+      # Execute normal run of launcher and run cron poller.
       def run
         super
-        cron_poller.start
+        cron_poller.start if @cron_poller
       end
 
-      # execute normal quiet of launcher and quiet cron poller
+      # Execute normal quiet of launcher and quiet cron poller.
       def quiet
-        cron_poller.terminate
+        cron_poller.terminate if @cron_poller
         super
       end
 
-      # execute normal stop of launcher and stop cron poller
+      # Execute normal stop of launcher and stop cron poller.
       def stop
-        cron_poller.terminate
+        cron_poller.terminate if @cron_poller
         super
       end
     end
@@ -40,7 +43,6 @@ module Sidekiq
 end
 
 Sidekiq.configure_server do
-  # require  Sidekiq original launcher
   require 'sidekiq/launcher'
 
   ::Sidekiq::Launcher.prepend(Sidekiq::Cron::Launcher)
