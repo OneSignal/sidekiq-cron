@@ -1,16 +1,15 @@
-# -*- encoding : utf-8 -*-
 require './test/test_helper'
 
 describe "Cron Job" do
   before do
-    #clear all previous saved data from redis
+    # Clear all previous saved data from Redis.
     Sidekiq.redis do |conn|
       conn.keys("cron_job*").each do |key|
         conn.del(key)
       end
     end
 
-    #clear all queues
+    # Clear all queues.
     Sidekiq::Queue.all.each do |queue|
       queue.clear
     end
@@ -76,7 +75,6 @@ describe "Cron Job" do
   end
 
   describe "invalid job" do
-
     before do
       @job = Sidekiq::Cron::Job.new()
     end
@@ -131,6 +129,22 @@ describe "Cron Job" do
     end
   end
 
+  describe 'cron formats' do
+    before do
+      @args = {
+        name: "Test",
+        klass: "CronTestClass"
+      }
+    end
+
+    it 'should support natural language format' do
+      @args[:cron] = "every 3 hours"
+      @job = Sidekiq::Cron::Job.new(@args)
+      assert @job.valid?
+      assert_equal Fugit::Cron.new("0 */3 * * *"), @job.send(:parsed_cron)
+    end
+  end
+
   describe 'parse_enqueue_time' do
     before do
       @args = {
@@ -164,11 +178,11 @@ describe "Cron Job" do
     end
 
     it 'returns formatted_last_time' do
-      assert_equal '2015-01-02T02:04:00Z', @job.formated_last_time(@time)
+      assert_equal '2015-01-02T02:04:00Z', @job.formatted_last_time(@time)
     end
 
-    it 'returns formated_enqueue_time' do
-      assert_equal '1420164240.0', @job.formated_enqueue_time(@time)
+    it 'returns formatted_enqueue_time' do
+      assert_equal '1420164240.0', @job.formatted_enqueue_time(@time)
     end
   end
 
@@ -233,8 +247,11 @@ describe "Cron Job" do
                                  "queue"=>:super,
                                  "backtrace"=>true,
                                  "class"=>"CronTestClassWithQueue"}
-      assert job_args[-1].is_a?(Float)
-      assert job_args[-1].between?(Time.now.to_f - 1, Time.now.to_f)
+      assert job_args.empty?
+
+      enqueue_args = job.enqueue_args
+      assert enqueue_args[-1].is_a?(Float)
+      assert enqueue_args[-1].between?(Time.now.to_f - 1, Time.now.to_f)
     end
 
     it "be initialized with 'class', 2 arguments and date_as_argument" do
@@ -246,11 +263,13 @@ describe "Cron Job" do
                                  "queue"=>:super,
                                  "backtrace"=>true,
                                  "class"=>"CronTestClassWithQueue"}
-      assert job_args[-1].is_a?(Float)
-      assert job_args[-1].between?(Time.now.to_f - 1, Time.now.to_f)
-      assert_equal job_args[0..-2], ["arg1", :arg2]
-    end
+      assert_equal job_args, ["arg1", :arg2]
 
+      enqueue_args = job.enqueue_args
+      assert_equal enqueue_args[0..-2], ["arg1", :arg2]
+      assert enqueue_args[-1].is_a?(Float)
+      assert enqueue_args[-1].between?(Time.now.to_f - 1, Time.now.to_f)
+    end
   end
 
   describe "cron test" do
@@ -304,6 +323,21 @@ describe "Cron Job" do
       }
       assert_equal @job.sidekiq_worker_message, payload
     end
+
+    describe 'with date_as_argument' do
+      before do
+        @args.merge!(date_as_argument: true)
+        @job = Sidekiq::Cron::Job.new(@args)
+      end
+
+      let(:args) { @job.sidekiq_worker_message['args'] }
+
+      it 'should add timestamp to args' do
+        assert_equal args[0], {foo: 'bar'}
+        assert args[-1].is_a?(Float)
+        assert args[-1].between?(Time.now.to_f - 1, Time.now.to_f)
+      end
+    end
   end
 
   describe '#sidekiq_worker_message settings overwrite queue name' do
@@ -342,6 +376,124 @@ describe "Cron Job" do
         queue: 'super_queue',
         description: nil,
         args:  { foo: 'bar' }
+      }
+      @job = Sidekiq::Cron::Job.new(@args)
+    end
+
+    it 'should return valid payload for Sidekiq::Client' do
+      payload = {
+        'class'       => 'ActiveJob::QueueAdapters::SidekiqAdapter::JobWrapper',
+        'wrapped'     => 'ActiveJobCronTestClass',
+        'queue'       => 'super_queue',
+        'description' => nil,
+        'args'        => [{
+          'job_class'  => 'ActiveJobCronTestClass',
+          'job_id'     => 'XYZ',
+          'queue_name' => 'super_queue',
+          'arguments'  => [{foo: 'bar'}]
+        }]
+      }
+      assert_equal @job.active_job_message, payload
+    end
+
+    describe 'with date_as_argument' do
+      before do
+        @args.merge!(date_as_argument: true)
+        @job = Sidekiq::Cron::Job.new(@args)
+      end
+
+      let(:args) { @job.active_job_message['args'][0]['arguments'] }
+
+      it 'should add timestamp to args' do
+        args = @job.active_job_message['args'][0]['arguments']
+        assert_equal args[0], {foo: 'bar'}
+        assert args[-1].is_a?(Float)
+        assert args[-1].between?(Time.now.to_f - 1, Time.now.to_f)
+      end
+    end
+  end
+
+  describe '#active_job_message - unknown Active Job Worker class' do
+    before do
+      SecureRandom.stubs(:uuid).returns('XYZ')
+      ActiveJob::Base.queue_name_prefix = ''
+
+      @args = {
+        name:  'Test',
+        cron:  '* * * * *',
+        klass: 'UnknownActiveJobCronTestClass',
+        active_job: true,
+        queue: 'super_queue',
+        description: nil,
+        args:  { foo: 'bar' }
+      }
+      @job = Sidekiq::Cron::Job.new(@args)
+    end
+
+    it 'should return valid payload for Sidekiq::Client' do
+      payload = {
+        'class'       => 'ActiveJob::QueueAdapters::SidekiqAdapter::JobWrapper',
+        'wrapped'     => 'UnknownActiveJobCronTestClass',
+        'queue'       => 'super_queue',
+        'description' => nil,
+        'args'        => [{
+          'job_class'  => 'UnknownActiveJobCronTestClass',
+          'job_id'     => 'XYZ',
+          'queue_name' => 'super_queue',
+          'arguments'  => [{foo: 'bar'}]
+        }]
+      }
+      assert_equal @job.active_job_message, payload
+    end
+  end
+
+  describe '#active_job_message with symbolize_args (hash)' do
+    before do
+      SecureRandom.stubs(:uuid).returns('XYZ')
+      ActiveJob::Base.queue_name_prefix = ''
+
+      @args = {
+        name:  'Test',
+        cron:  '* * * * *',
+        klass: 'ActiveJobCronTestClass',
+        queue: 'super_queue',
+        description: nil,
+        symbolize_args: true,
+        args: { 'foo' => 'bar' }
+      }
+      @job = Sidekiq::Cron::Job.new(@args)
+    end
+
+    it 'should return valid payload for Sidekiq::Client' do
+      payload = {
+        'class'       => 'ActiveJob::QueueAdapters::SidekiqAdapter::JobWrapper',
+        'wrapped'     => 'ActiveJobCronTestClass',
+        'queue'       => 'super_queue',
+        'description' => nil,
+        'args'        => [{
+          'job_class'  => 'ActiveJobCronTestClass',
+          'job_id'     => 'XYZ',
+          'queue_name' => 'super_queue',
+          'arguments'  => [{foo: 'bar'}]
+        }]
+      }
+      assert_equal @job.active_job_message, payload
+    end
+  end
+
+  describe '#active_job_message with symbolize_args (array)' do
+    before do
+      SecureRandom.stubs(:uuid).returns('XYZ')
+      ActiveJob::Base.queue_name_prefix = ''
+
+      @args = {
+        name:  'Test',
+        cron:  '* * * * *',
+        klass: 'ActiveJobCronTestClass',
+        queue: 'super_queue',
+        description: nil,
+        symbolize_args: true,
+        args: [{ 'foo' => 'bar' }]
       }
       @job = Sidekiq::Cron::Job.new(@args)
     end
@@ -411,6 +563,53 @@ describe "Cron Job" do
         @job.expects(:enqueue_active_job)
             .returns(ActiveJobCronTestClass.new)
         @job.enque!
+      end
+
+      describe 'with date_as_argument' do
+        before do
+          @args.merge!(date_as_argument: true)
+          @job = Sidekiq::Cron::Job.new(@args)
+        end
+
+        it 'should add timestamp to args' do
+          ActiveJobCronTestClass.expects(:perform_later)
+                                .returns(ActiveJobCronTestClass.new)
+                                .with { |*args|
+                                  assert args[-1].is_a?(Float)
+                                  assert args[-1].between?(Time.now.to_f - 1, Time.now.to_f)
+                                }
+          @job.enque!
+        end
+      end
+
+      describe 'with active_job == true' do
+        before do
+          @args.merge!(active_job: true)
+        end
+
+        describe 'with active_job job class' do
+          before do
+            @job = Sidekiq::Cron::Job.new(@args.merge(klass: 'ActiveJobCronTestClass'))
+          end
+
+          it 'enques via active_job interface' do
+            @job.expects(:enqueue_active_job)
+                .returns(ActiveJobCronTestClass.new)
+            @job.enque!
+          end
+        end
+
+        describe 'with non sidekiq job class' do
+          before do
+            @job = Sidekiq::Cron::Job.new(@args.merge(klass: 'CronTestClass'))
+          end
+
+          it 'enques via active_job interface' do
+            @job.expects(:enqueue_active_job)
+                .returns(ActiveJobCronTestClass.new)
+            @job.enque!
+          end
+        end
       end
     end
 
@@ -539,6 +738,24 @@ describe "Cron Job" do
             .returns(true)
         @job.enque!
       end
+
+      describe 'with date_as_argument' do
+        before do
+          @args.merge!(date_as_argument: true)
+          @job = Sidekiq::Cron::Job.new(@args)
+        end
+
+        it 'should add timestamp to args' do
+          CronTestClass::Setter.any_instance
+                               .expects(:perform_async)
+                               .returns(true)
+                               .with { |*args|
+                                 assert args[-1].is_a?(Float)
+                                 assert args[-1].between?(Time.now.to_f - 1, Time.now.to_f)
+                               }
+          @job.enque!
+        end
+      end
     end
 
     describe 'sidekiq worker unknown class' do
@@ -649,7 +866,7 @@ describe "Cron Job" do
     end
 
     it "last_enqueue_time shouldn't be rewritten after save" do
-      #adding last_enqueue_time to initialize is only for test purpose
+      # Adding last_enqueue_time to initialize is only for testing purposes.
       last_enqueue_time = '2013-01-01 23:59:59 +0000'
       expected_enqueue_time = DateTime.parse(last_enqueue_time).to_time.utc
       Sidekiq::Cron::Job.create(@args.merge('last_enqueue_time' => last_enqueue_time))
@@ -675,6 +892,7 @@ describe "Cron Job" do
         assert_equal job.name, "Test"
       end
     end
+
     it "from String" do
       args = {
         name: "Test",
@@ -687,6 +905,7 @@ describe "Cron Job" do
         assert_equal job.name, "Test"
       end
     end
+
     it "from Array" do
       args = {
         name: "Test",
@@ -740,7 +959,7 @@ describe "Cron Job" do
       Sidekiq::Cron::Job.create(@args.merge(name: "Test3"))
 
       Sidekiq.redis do |conn|
-        conn.sadd Sidekiq::Cron::Job.jobs_key, "some_other_key"
+        conn.sadd Sidekiq::Cron::Job.jobs_key, ["some_other_key"]
       end
 
       assert_equal Sidekiq::Cron::Job.all.size, 3, "All have to return only valid 3 jobs"
@@ -758,7 +977,6 @@ describe "Cron Job" do
       Sidekiq::Cron::Job.create(@args)
       assert Sidekiq::Cron::Job.find('name' => "Test"), "String keys"
     end
-
   end
 
   describe "destroy" do
@@ -795,7 +1013,6 @@ describe "Cron Job" do
       Sidekiq::Cron::Job.create(@args)
       assert Sidekiq::Cron::Job.destroy('name' => "Test"), "String keys"
     end
-
   end
 
   describe "destroy_removed_jobs" do
@@ -827,11 +1044,11 @@ describe "Cron Job" do
         cron: "* * * * *",
         klass: "CronTestClass"
       }
-      #first time is allways
-      #after next cron time!
+      # First time is always after next cron time!
       @time = Time.now.utc + 120
     end
-    it "be allways false when status is disabled" do
+
+    it "be always false when status is disabled" do
       refute Sidekiq::Cron::Job.new(@args.merge(status: 'disabled')).should_enque? @time
       refute Sidekiq::Cron::Job.new(@args.merge(status: 'disabled')).should_enque? @time - 60
       refute Sidekiq::Cron::Job.new(@args.merge(status: 'disabled')).should_enque? @time - 120
@@ -852,7 +1069,6 @@ describe "Cron Job" do
       assert Sidekiq::Cron::Job.new(@args).should_enque? @time + 235
       refute Sidekiq::Cron::Job.new(@args).should_enque? @time + 235
 
-      #just for check
       refute Sidekiq::Cron::Job.new(@args).should_enque? @time
       refute Sidekiq::Cron::Job.new(@args).should_enque? @time + 135
       refute Sidekiq::Cron::Job.new(@args).should_enque? @time + 235
@@ -868,7 +1084,7 @@ describe "Cron Job" do
       assert job.test_and_enque_for_time!(@time), "should enqueue"
 
       future_now = @time + 1 * 60 * 60
-      Time.stubs(:now).returns(future_now) # save uses Time.now.utc
+      Time.stubs(:now).returns(future_now) # Save uses Time.now.utc
       job.save
       assert Sidekiq::Cron::Job.new(@args).test_and_enque_for_time!(future_now + 30), "should enqueue"
     end
@@ -885,7 +1101,7 @@ describe "Cron Job" do
       end
       assert_equal Sidekiq::Queue.all.first.size, 1, "Sidekiq queue 1 job in queue"
 
-      # 20 hours after
+      # 20 hours after.
       assert Sidekiq::Cron::Job.new(@args).test_and_enque_for_time! @time + 1 * 60 * 60
       refute Sidekiq::Cron::Job.new(@args).test_and_enque_for_time! @time + 1 * 60 * 60
 
@@ -894,7 +1110,7 @@ describe "Cron Job" do
       end
       assert_equal Sidekiq::Queue.all.first.size, 2, "Sidekiq queue 2 jobs in queue"
 
-      # 26 hour after
+      # 26 hour after.
       assert Sidekiq::Cron::Job.new(@args).test_and_enque_for_time! @time + 26 * 60 * 60
       refute Sidekiq::Cron::Job.new(@args).test_and_enque_for_time! @time + 26 * 60 * 60
 
@@ -906,7 +1122,6 @@ describe "Cron Job" do
   end
 
   describe "load" do
-
     describe "from hash" do
       before do
         @jobs_hash = {
@@ -929,9 +1144,19 @@ describe "Cron Job" do
         assert_equal Sidekiq::Cron::Job.all.size, 2, "Should have 2 jobs after load"
       end
 
+      it "duplicate jobs are not loaded" do
+        out = Sidekiq::Cron::Job.load_from_hash @jobs_hash
+        assert_equal out.size, 0, "should have no errors"
+        assert_equal Sidekiq::Cron::Job.all.size, 2, "Should have 2 jobs after load"
+
+        out_2 = Sidekiq::Cron::Job.load_from_hash @jobs_hash
+        assert_equal out_2.size, 0, "should have no errors"
+        assert_equal Sidekiq::Cron::Job.all.size, 2, "Should have 2 jobs after loading again"
+      end
+
       it "return errors on loaded jobs" do
         assert_equal Sidekiq::Cron::Job.all.size, 0, "Should have 0 jobs before load"
-        #set something bag to hash
+        # Set something bad to hash.
         @jobs_hash['name_of_job']['cron'] = "bad cron"
         out = Sidekiq::Cron::Job.load_from_hash @jobs_hash
         assert_equal 1, out.size, "should have 1 error"
@@ -981,6 +1206,16 @@ describe "Cron Job" do
         assert_equal Sidekiq::Cron::Job.all.size, 2, "Should have 2 jobs after load"
       end
 
+      it "duplicate jobs are not loaded" do
+        out = Sidekiq::Cron::Job.load_from_array @jobs_array
+        assert_equal out.size, 0, "should have no errors"
+        assert_equal Sidekiq::Cron::Job.all.size, 2, "Should have 2 jobs after load"
+
+        out_2 = Sidekiq::Cron::Job.load_from_array @jobs_array
+        assert_equal out_2.size, 0, "should have no errors"
+        assert_equal Sidekiq::Cron::Job.all.size, 2, "Should have 2 jobs after loading again"
+      end
+
       it "create new jobs and update old one with same settings with load_from_array" do
         assert_equal Sidekiq::Cron::Job.all.size, 0, "Should have 0 jobs before load"
         out = Sidekiq::Cron::Job.load_from_array! @jobs_array
@@ -1018,7 +1253,6 @@ describe "Cron Job" do
 
         assert_equal Sidekiq::Cron::Job.all.first.sidekiq_worker_message, payload
       end
-
     end
   end
 end

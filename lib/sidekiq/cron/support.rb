@@ -28,9 +28,16 @@ module Sidekiq
               const
             end
 
-            # owner is in Object, so raise
             constant.const_get(name, false)
           end
+        end
+      end
+
+      def self.load_yaml(src)
+        if Psych::VERSION > "4.0"
+          YAML.safe_load(src, permitted_classes: [Symbol], aliases: true)
+        else
+          YAML.load(src)
         end
       end
     end
